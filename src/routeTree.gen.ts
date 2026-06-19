@@ -19,9 +19,9 @@ import { Route as CapturesRouteImport } from './routes/captures'
 import { Route as BaseRouteImport } from './routes/base'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiSisCaptureRouteImport } from './routes/api/sis-capture'
-import { Route as ApiSavePartRouteImport } from './routes/api/save-part'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
-import { Route as ApiPublicSisCaptureRouteImport } from './routes/api/public/sis-capture'
+import { Route as ApiCapturesRouteImport } from './routes/api/captures'
 
 const OcrRoute = OcrRouteImport.update({
   id: '/ocr',
@@ -73,9 +73,9 @@ const ApiSisCaptureRoute = ApiSisCaptureRouteImport.update({
   path: '/api/sis-capture',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiSavePartRoute = ApiSavePartRouteImport.update({
-  id: '/api/save-part',
-  path: '/api/save-part',
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiChatRoute = ApiChatRouteImport.update({
@@ -83,9 +83,9 @@ const ApiChatRoute = ApiChatRouteImport.update({
   path: '/api/chat',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiPublicSisCaptureRoute = ApiPublicSisCaptureRouteImport.update({
-  id: '/api/public/sis-capture',
-  path: '/api/public/sis-capture',
+const ApiCapturesRoute = ApiCapturesRouteImport.update({
+  id: '/api/captures',
+  path: '/api/captures',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -99,10 +99,10 @@ export interface FileRoutesByFullPath {
   '/history': typeof HistoryRoute
   '/import': typeof ImportRoute
   '/ocr': typeof OcrRoute
+  '/api/captures': typeof ApiCapturesRoute
   '/api/chat': typeof ApiChatRoute
-  '/api/save-part': typeof ApiSavePartRoute
+  '/api/health': typeof ApiHealthRoute
   '/api/sis-capture': typeof ApiSisCaptureRoute
-  '/api/public/sis-capture': typeof ApiPublicSisCaptureRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -114,10 +114,10 @@ export interface FileRoutesByTo {
   '/history': typeof HistoryRoute
   '/import': typeof ImportRoute
   '/ocr': typeof OcrRoute
+  '/api/captures': typeof ApiCapturesRoute
   '/api/chat': typeof ApiChatRoute
-  '/api/save-part': typeof ApiSavePartRoute
+  '/api/health': typeof ApiHealthRoute
   '/api/sis-capture': typeof ApiSisCaptureRoute
-  '/api/public/sis-capture': typeof ApiPublicSisCaptureRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -130,10 +130,10 @@ export interface FileRoutesById {
   '/history': typeof HistoryRoute
   '/import': typeof ImportRoute
   '/ocr': typeof OcrRoute
+  '/api/captures': typeof ApiCapturesRoute
   '/api/chat': typeof ApiChatRoute
-  '/api/save-part': typeof ApiSavePartRoute
+  '/api/health': typeof ApiHealthRoute
   '/api/sis-capture': typeof ApiSisCaptureRoute
-  '/api/public/sis-capture': typeof ApiPublicSisCaptureRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -147,10 +147,10 @@ export interface FileRouteTypes {
     | '/history'
     | '/import'
     | '/ocr'
+    | '/api/captures'
     | '/api/chat'
-    | '/api/save-part'
+    | '/api/health'
     | '/api/sis-capture'
-    | '/api/public/sis-capture'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -162,10 +162,10 @@ export interface FileRouteTypes {
     | '/history'
     | '/import'
     | '/ocr'
+    | '/api/captures'
     | '/api/chat'
-    | '/api/save-part'
+    | '/api/health'
     | '/api/sis-capture'
-    | '/api/public/sis-capture'
   id:
     | '__root__'
     | '/'
@@ -177,10 +177,10 @@ export interface FileRouteTypes {
     | '/history'
     | '/import'
     | '/ocr'
+    | '/api/captures'
     | '/api/chat'
-    | '/api/save-part'
+    | '/api/health'
     | '/api/sis-capture'
-    | '/api/public/sis-capture'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -193,10 +193,10 @@ export interface RootRouteChildren {
   HistoryRoute: typeof HistoryRoute
   ImportRoute: typeof ImportRoute
   OcrRoute: typeof OcrRoute
+  ApiCapturesRoute: typeof ApiCapturesRoute
   ApiChatRoute: typeof ApiChatRoute
-  ApiSavePartRoute: typeof ApiSavePartRoute
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiSisCaptureRoute: typeof ApiSisCaptureRoute
-  ApiPublicSisCaptureRoute: typeof ApiPublicSisCaptureRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -271,11 +271,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSisCaptureRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/save-part': {
-      id: '/api/save-part'
-      path: '/api/save-part'
-      fullPath: '/api/save-part'
-      preLoaderRoute: typeof ApiSavePartRouteImport
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/chat': {
@@ -285,11 +285,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiChatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/public/sis-capture': {
-      id: '/api/public/sis-capture'
-      path: '/api/public/sis-capture'
-      fullPath: '/api/public/sis-capture'
-      preLoaderRoute: typeof ApiPublicSisCaptureRouteImport
+    '/api/captures': {
+      id: '/api/captures'
+      path: '/api/captures'
+      fullPath: '/api/captures'
+      preLoaderRoute: typeof ApiCapturesRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -305,11 +305,21 @@ const rootRouteChildren: RootRouteChildren = {
   HistoryRoute: HistoryRoute,
   ImportRoute: ImportRoute,
   OcrRoute: OcrRoute,
+  ApiCapturesRoute: ApiCapturesRoute,
   ApiChatRoute: ApiChatRoute,
-  ApiSavePartRoute: ApiSavePartRoute,
+  ApiHealthRoute: ApiHealthRoute,
   ApiSisCaptureRoute: ApiSisCaptureRoute,
-  ApiPublicSisCaptureRoute: ApiPublicSisCaptureRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}

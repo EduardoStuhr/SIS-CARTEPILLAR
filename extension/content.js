@@ -1,320 +1,475 @@
-/* CAT Collector — content script MV3. */
-(function () {
-  window.__catCollectorLoaded = true;
-  if (window.__catCollectorV12Loaded) {
-    console.log("[SIS] content.js reinjetado");
-  }
-  window.__catCollectorV12Loaded = true;
+import {
+  MESSAGE_TYPES,
+  SIS_URL_PATTERN,
+  absoluteUrl,
+  captureFingerprint,
+  cleanText,
+  normalizeCapture,
+  normalizePartNumber,
+  normalizeQuantity,
+  serializeError,
+} from "./utils.js";
 
-  const PANEL_ID = "catc-panel";
-  const PN_RE = /\b([0-9A-Z]{1,4}[- ]?[0-9A-Z]{3,6})\b/g;
-  const SIS_RE = /^https:\/\/sis2\.cat\.com\//i;
+const INSTANCE_KEY = "__catCollectorProductionInstance";
+const PANEL_ID = "cat-collector-panel";
+const TOAST_ID = "cat-collector-toast";
+const AUTO_CAPTURE_DELAY_MS = 1_800;
 
+if (!globalThis[INSTANCE_KEY]) {
+  globalThis[INSTANCE_KEY] = true;
+  startCollector();
+} else {
+  console.log("[SIS] content.js já está carregado");
+}
+
+function startCollector() {
   console.log("[SIS] Detectado");
+  let lastAutoFingerprint = "";
+  let observedUrl = location.href;
+  let refreshTimer;
+  let autoCaptureTimer;
 
-  function textOf(el) {
-    return (el?.innerText || el?.textContent || "").replace(/\s+/g, " ").trim();
+  function textOf(element, maxLength = 1000) {
+    return cleanText(element?.innerText ?? element?.textContent, maxLength);
   }
 
-  function absolutizeUrl(value) {
-    if (!value) return null;
-    try {
-      return new URL(value, location.href).href;
-    } catch (_e) {
-      return value;
+  function getSearchRoots() {
+    const roots = [document];
+    const visited = new Set(roots);
+
+    for (let index = 0; index < roots.length; index += 1) {
+      const root = roots[index];
+      for (const element of root.querySelectorAll?.("*") ?? []) {
+        if (element.shadowRoot && !visited.has(element.shadowRoot)) {
+          visited.add(element.shadowRoot);
+          roots.push(element.shadowRoot);
+        }
+        if (element instanceof HTMLIFrameElement) {
+          try {
+            if (element.contentDocument && !visited.has(element.contentDocument)) {
+              visited.add(element.contentDocument);
+              roots.push(element.contentDocument);
+            }
+          } catch {
+            // Cross-origin frames are intentionally ignored.
+          }
+        }
+      }
     }
+    return roots;
   }
 
-  function pageText() {
-    return `${location.href} ${document.title} ${textOf(document.body)}`;
+  function queryAll(selector) {
+    const elements = [];
+    for (const root of getSearchRoots()) {
+      elements.push(...(root.querySelectorAll?.(selector) ?? []));
+    }
+    return [...new Set(elements)];
   }
 
-  function breadcrumbNodes() {
-    return [...document.querySelectorAll(
-      "nav[aria-label*='bread' i] *, [class*='breadcrumb' i] *, [data-testid*='breadcrumb' i] *, .MuiBreadcrumbs-root *, .ant-breadcrumb *"
-    )].filter((el) => textOf(el));
+  function firstText(selectors) {
+    for (const selector of selectors) {
+      for (const element of queryAll(selector)) {
+        const value = textOf(element, 240);
+        if (value) return value;
+      }
+    }
+    return "";
   }
 
   function breadcrumbTexts() {
-    const values = breadcrumbNodes().map(textOf).filter(Boolean);
-    return [...new Set(values)].filter((value) => value.length <= 90);
+    const nodes = queryAll(
+      "nav[aria-label*='bread' i] a, nav[aria-label*='bread' i] li, " +
+        "[class*='breadcrumb' i] a, [class*='breadcrumb' i] li, " +
+        "[data-testid*='breadcrumb' i] *, .MuiBreadcrumbs-root li, .ant-breadcrumb-link",
+    );
+    return [...new Set(nodes.map((element) => textOf(element, 120)).filter(Boolean))];
+  }
+
+  function pageText() {
+    return cleanText(`${document.title} ${document.body?.innerText ?? ""}`, 100_000);
+  }
+
+  function valueFromLabels(labels) {
+    const source = `${location.href} ${breadcrumbTexts().join(" ")} ${pageText()}`;
+    for (const label of labels) {
+      const match = source.match(new RegExp(`${label}\\s*[:#-]?\\s*([A-Z0-9-]{3,30})`, "i"));
+      if (match?.[1]) return cleanText(match[1], 120);
+    }
+    return "";
   }
 
   function extractSerialNumber() {
     const url = new URL(location.href);
-    for (const key of ["serialNumber", "serial", "sn", "machineSerial", "equipmentSerialNumber"]) {
+    for (const key of [
+      "serialNumber",
+      "serial",
+      "sn",
+      "machineSerial",
+      "equipmentSerialNumber",
+      "productId",
+    ]) {
       const value = url.searchParams.get(key);
-      if (value) return value.toUpperCase();
+      if (value) return cleanText(value, 120).toUpperCase();
     }
-    const source = `${location.href} ${breadcrumbTexts().join(" ")}`;
-    const labeled = source.match(/(?:serial|s\/n|n[úu]mero\s+de\s+s[ée]rie)\D*([A-Z0-9]{5,12})/i);
-    if (labeled) return labeled[1].toUpperCase();
-    const catLike = source.match(/\b([A-Z]{3}\d{5})\b/i);
-    return catLike ? catLike[1].toUpperCase() : null;
+    const labeled = valueFromLabels([
+      "serial(?: number)?",
+      "s\\/n",
+      "n[úu]mero de s[ée]rie",
+      "prefixo",
+    ]);
+    if (labeled) return labeled.toUpperCase();
+    const catSerial = `${location.href} ${breadcrumbTexts().join(" ")}`.match(/\b([A-Z]{3}\d{5,8})\b/i);
+    return catSerial?.[1]?.toUpperCase() ?? "";
   }
 
   function extractMachineModel() {
-    const texts = breadcrumbTexts();
-    for (const value of texts) {
-      const match = value.match(/\b(\d{3,4}\s?[A-Z]{0,3}(?:\s?GC)?)\b/i);
-      if (match && !/^\d{4,}$/.test(match[1])) return match[1].replace(/\s+/g, " ").trim().toUpperCase();
-    }
-    const match = pageText().match(/\b(\d{3,4}\s?[A-Z]{1,3}(?:\s?GC)?)\b/i);
-    return match ? match[1].replace(/\s+/g, " ").trim().toUpperCase() : null;
+    const labeled = valueFromLabels(["machine model", "model", "modelo", "equipment"]);
+    if (labeled && /\d/.test(labeled)) return labeled.toUpperCase();
+
+    const source = `${breadcrumbTexts().join(" ")} ${document.title}`;
+    const match = source.match(/\b(\d{2,4}\s?[A-Z]{0,4}(?:\s?(?:GC|XE|L|K|M))?)\b/i);
+    return cleanText(match?.[1], 120).toUpperCase();
   }
 
-  function activeText(selectors) {
-    for (const selector of selectors) {
-      const el = document.querySelector(selector);
-      const value = textOf(el);
-      if (value) return value;
-    }
-    return null;
-  }
-
-  function inferFromBreadcrumb(indexFromEnd) {
-    const texts = breadcrumbTexts().filter((value) => !/sis|caterpillar|home|in[íi]cio/i.test(value));
-    return texts.length >= Math.abs(indexFromEnd) ? texts.at(indexFromEnd) : null;
+  function filteredBreadcrumbs() {
+    return breadcrumbTexts().filter(
+      (value) => !/^(sis|sis 2\.0|caterpillar|cat|home|início|inicio)$/i.test(value),
+    );
   }
 
   function extractSystem() {
-    return activeText([
-      "[data-testid*='system' i][aria-selected='true']",
-      "[class*='system' i][class*='active' i]",
-      "[class*='system' i][class*='selected' i]",
-      "li[aria-selected='true'][data-level='system']",
-    ]) || inferFromBreadcrumb(-3) || null;
+    return (
+      firstText([
+        "[data-testid*='system' i][aria-selected='true']",
+        "[data-level='system'][aria-selected='true']",
+        "[class*='system' i][class*='selected' i]",
+        "[class*='system' i][class*='active' i]",
+      ]) || filteredBreadcrumbs().at(-3) || ""
+    );
   }
 
   function extractSubsystem() {
-    return activeText([
-      "[data-testid*='subsystem' i][aria-selected='true']",
-      "[class*='subsystem' i][class*='active' i]",
-      "[class*='subsystem' i][class*='selected' i]",
-      "li[aria-selected='true'][data-level='subsystem']",
-    ]) || inferFromBreadcrumb(-2) || null;
+    return (
+      firstText([
+        "[data-testid*='subsystem' i][aria-selected='true']",
+        "[data-level='subsystem'][aria-selected='true']",
+        "[class*='subsystem' i][class*='selected' i]",
+        "[class*='subsystem' i][class*='active' i]",
+      ]) || filteredBreadcrumbs().at(-2) || ""
+    );
   }
 
   function extractGroup() {
-    return activeText([
-      "[data-testid*='group' i][aria-selected='true']",
-      "[class*='group' i][class*='active' i]",
-      "[class*='group' i][class*='selected' i]",
-      "[class*='illustration' i][class*='title' i]",
-      "h1", "h2",
-    ]) || inferFromBreadcrumb(-1) || null;
+    return (
+      firstText([
+        "[data-testid*='group' i][aria-selected='true']",
+        "[data-level='group'][aria-selected='true']",
+        "[class*='group' i][class*='selected' i]",
+        "[class*='illustration' i] [class*='title' i]",
+        "main h1",
+        "main h2",
+      ]) || filteredBreadcrumbs().at(-1) || ""
+    );
+  }
+
+  function imageUrlFrom(root) {
+    const image = root?.querySelector?.("img, svg image");
+    return absoluteUrl(
+      image?.currentSrc ??
+        image?.getAttribute?.("src") ??
+        image?.getAttribute?.("href") ??
+        image?.getAttribute?.("xlink:href"),
+      location.href,
+    );
   }
 
   function extractDiagramImage() {
-    const img = document.querySelector(
-      "img[src*='illustration' i], img[class*='illustration' i], [class*='illustration' i] img, [class*='diagram' i] img, svg image"
+    for (const selector of [
+      "img[src*='illustration' i]",
+      "img[class*='illustration' i]",
+      "[class*='illustration' i] img",
+      "[class*='diagram' i] img",
+      "[data-testid*='diagram' i] img",
+      "svg image",
+    ]) {
+      const image = queryAll(selector)[0];
+      const url = imageUrlFrom(image?.parentElement ?? image);
+      if (url) return url;
+    }
+    return "";
+  }
+
+  function isVisible(element, viewportOnly = false) {
+    if (!(element instanceof Element)) return false;
+    const style = getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
+      return false;
+    }
+    const rectangle = element.getBoundingClientRect();
+    if (rectangle.width <= 0 || rectangle.height <= 0) return false;
+    if (!viewportOnly) return true;
+    return (
+      rectangle.top < innerHeight &&
+      rectangle.bottom > 0 &&
+      rectangle.left < innerWidth &&
+      rectangle.right > 0
     );
-    return absolutizeUrl(img?.getAttribute("src") || img?.getAttribute("href") || img?.getAttribute("xlink:href"));
-  }
-
-  function rowImage(row) {
-    const img = row.querySelector("img, svg image");
-    return absolutizeUrl(img?.getAttribute("src") || img?.getAttribute("href") || img?.getAttribute("xlink:href"));
-  }
-
-  function normalizePartNumber(value) {
-    const match = String(value || "").match(/\b([0-9A-Z]{1,4}[- ]?[0-9A-Z]{3,6})\b/i);
-    return match ? match[1].replace(/\s+/, "-").toUpperCase() : null;
   }
 
   function readHeaderMap(table) {
-    const headers = [...table.querySelectorAll("thead th, thead td, tr:first-child th")].map((cell) => textOf(cell).toLowerCase());
-    const find = (tests) => headers.findIndex((header) => tests.some((test) => test.test(header)));
+    const headers = [...table.querySelectorAll("thead th, thead td, tr:first-child th")].map((cell) =>
+      textOf(cell, 100).toLowerCase(),
+    );
+    const find = (patterns) => headers.findIndex((header) => patterns.some((pattern) => pattern.test(header)));
     return {
-      partNumber: find([/part/, /pe[çc]a/, /n[úu]mero/]),
-      description: find([/descr/, /name/, /nome/]),
+      partNumber: find([/part/, /pe[çc]a/, /n[úu]mero/, /^pn$/]),
+      description: find([/descr/, /name/, /nome/, /denomina/]),
       quantity: find([/qty/, /quant/, /qtd/]),
       position: find([/item/, /pos/, /ref/]),
     };
   }
 
   function extractPartFromRow(row, headerMap = {}) {
-    const cells = [...row.querySelectorAll("td, th, [role='cell'], [role='gridcell']")].map(textOf).filter(Boolean);
-    const rowText = cells.join(" ") || textOf(row);
-    const partNumber = normalizePartNumber(
-      cells[headerMap.partNumber] || row.getAttribute("data-part-number") || rowText
-    );
+    const cells = [...row.querySelectorAll("td, th, [role='cell'], [role='gridcell']")]
+      .map((cell) => textOf(cell, 500))
+      .filter(Boolean);
+    const rowText = cells.join(" ") || textOf(row, 1500);
+    const explicitPartNumber =
+      row.getAttribute("data-part-number") ??
+      row.querySelector("[data-part-number]")?.getAttribute("data-part-number");
+    const partNumber = normalizePartNumber(cells[headerMap.partNumber] ?? explicitPartNumber ?? rowText);
     if (!partNumber) return null;
 
-    const quantityText = cells[headerMap.quantity] || row.getAttribute("data-quantity") || cells.find((cell) => /^\d{1,3}$/.test(cell));
-    const quantity = Math.max(1, Math.min(999, parseInt(quantityText || "1", 10) || 1));
-    const position = cells[headerMap.position] || row.getAttribute("data-item") || cells.find((cell) => /^[A-Z0-9]{1,4}$/i.test(cell) && normalizePartNumber(cell) !== partNumber) || null;
-    const description = cells[headerMap.description]
-      || cells.filter((cell) => normalizePartNumber(cell) !== partNumber && !/^\d{1,3}$/.test(cell)).sort((a, b) => b.length - a.length)[0]
-      || partNumber;
+    const quantityText =
+      cells[headerMap.quantity] ??
+      row.getAttribute("data-quantity") ??
+      cells.find((cell) => /^\d{1,4}$/.test(cell));
+    const position = cleanText(
+      cells[headerMap.position] ??
+        row.getAttribute("data-item") ??
+        cells.find((cell) => /^[A-Z0-9]{1,4}$/i.test(cell) && normalizePartNumber(cell) !== partNumber),
+      80,
+    );
+    const description = cleanText(
+      cells[headerMap.description] ??
+        cells
+          .filter(
+            (cell) =>
+              normalizePartNumber(cell) !== partNumber &&
+              !/^\d{1,4}$/.test(cell) &&
+              cell !== position,
+          )
+          .sort((first, second) => second.length - first.length)[0] ??
+        partNumber,
+      500,
+    );
 
     return {
       position,
-      itemPosition: position,
       partNumber,
-      description,
-      quantity,
-      imageUrl: rowImage(row) || extractDiagramImage(),
+      description: description || partNumber,
+      quantity: normalizeQuantity(quantityText),
+      imageUrl: imageUrlFrom(row) || extractDiagramImage(),
+      url: location.href,
     };
   }
 
-  function candidateRows(root, mode) {
-    const rows = [];
-    root.querySelectorAll("table, [role='table'], [role='grid']").forEach((table) => {
-      const headerMap = readHeaderMap(table);
-      table.querySelectorAll("tbody tr, tr, [role='row']").forEach((row) => rows.push({ row, headerMap }));
-    });
-    root.querySelectorAll("[data-part-number], [class*='part' i], [data-testid*='part' i]").forEach((row) => rows.push({ row, headerMap: {} }));
+  function candidateRows(mode) {
+    const candidates = [];
+    const selectedSelectors =
+      "tr[aria-selected='true'], [role='row'][aria-selected='true'], " +
+      "[data-testid*='part' i][class*='selected' i], [class*='part' i][class*='selected' i]";
 
-    const visible = rows.filter(({ row }) => {
-      const rect = row.getBoundingClientRect();
-      const hasSize = rect.width > 0 && rect.height > 0;
-      if (!hasSize) return false;
-      return mode !== "visible" || (rect.top < innerHeight && rect.bottom > 0 && rect.left < innerWidth && rect.right > 0);
-    });
-    return mode === "part" ? visible.slice(0, 1) : visible;
+    if (mode === "part") {
+      for (const row of queryAll(selectedSelectors)) candidates.push({ row, headerMap: {} });
+    }
+
+    for (const table of queryAll("table, [role='table'], [role='grid']")) {
+      const headerMap = readHeaderMap(table);
+      for (const row of table.querySelectorAll("tbody tr, [role='row']")) {
+        candidates.push({ row, headerMap });
+      }
+    }
+    for (const row of queryAll("[data-part-number], [data-testid*='part-row' i]")) {
+      candidates.push({ row, headerMap: {} });
+    }
+
+    const unique = [...new Map(candidates.map((item) => [item.row, item])).values()].filter(({ row }) =>
+      isVisible(row, mode === "visible"),
+    );
+    return mode === "part" ? unique.slice(0, 1) : unique;
   }
 
   function collectParts(mode = "page") {
     const parts = [];
-    candidateRows(document, mode).forEach(({ row, headerMap }) => {
+    for (const { row, headerMap } of candidateRows(mode)) {
       const part = extractPartFromRow(row, headerMap);
       if (part) parts.push(part);
-    });
-
-    if (!parts.length && mode !== "part") {
-      const matches = [...pageText().matchAll(PN_RE)].map((match) => normalizePartNumber(match[1])).filter(Boolean);
-      matches.forEach((partNumber) => parts.push({ position: null, itemPosition: null, partNumber, description: partNumber, quantity: 1, imageUrl: extractDiagramImage() }));
     }
 
-    const seen = new Set();
-    return parts.filter((part) => {
-      if (seen.has(part.partNumber)) return false;
-      seen.add(part.partNumber);
-      return true;
-    });
+    if (!parts.length && mode !== "part") {
+      const matches = pageText().match(/[A-Z0-9]{1,5}(?:[-\s]?[A-Z0-9]{3,8})/gi) ?? [];
+      for (const value of matches) {
+        const partNumber = normalizePartNumber(value);
+        if (!partNumber) continue;
+        parts.push({
+          position: "",
+          partNumber,
+          description: partNumber,
+          quantity: 1,
+          imageUrl: extractDiagramImage(),
+          url: location.href,
+        });
+      }
+    }
+
+    return normalizeCapture({ parts, url: location.href }).parts;
   }
 
   function collectSisData(mode = "page") {
     console.log("[SIS] Captura iniciada");
     const parts = collectParts(mode);
     console.log(`[SIS] ${parts.length} peças encontradas`);
-    return {
-      serialNumber: extractSerialNumber(),
+    return normalizeCapture({
       machineModel: extractMachineModel(),
-      model: extractMachineModel(),
+      serialNumber: extractSerialNumber(),
       system: extractSystem(),
       subsystem: extractSubsystem(),
       group: extractGroup(),
-      url: window.location.href,
-      sisUrl: window.location.href,
-      imageUrl: extractDiagramImage(),
       capturedAt: new Date().toISOString(),
+      url: location.href,
       parts,
-      items: parts.map((part) => ({
-        partNumber: part.partNumber,
-        description: part.description,
-        quantity: part.quantity,
-        itemPosition: part.position,
-        imageUrl: part.imageUrl,
-      })),
-    };
+    });
   }
 
-  window.collectSisData = collectSisData;
-
-  function toast(message, ok = true) {
-    const old = document.getElementById("catc-toast");
-    if (old) old.remove();
-    const toastEl = document.createElement("div");
-    toastEl.id = "catc-toast";
-    toastEl.style.borderColor = ok ? "#FFCC00" : "#ff5555";
-    toastEl.style.color = ok ? "#FFCC00" : "#ff8888";
-    toastEl.textContent = message;
-    document.body.appendChild(toastEl);
-    setTimeout(() => toastEl.remove(), 3500);
+  function showToast(message, ok = true) {
+    document.getElementById(TOAST_ID)?.remove();
+    const element = document.createElement("div");
+    element.id = TOAST_ID;
+    element.dataset.type = ok ? "success" : "error";
+    element.textContent = message;
+    document.documentElement.appendChild(element);
+    setTimeout(() => element.remove(), 4_000);
   }
 
-  async function send(payload) {
-    const { backendUrl, collectorKey } = await chrome.storage.local.get(["backendUrl", "collectorKey"]);
-    if (!backendUrl || !collectorKey) {
-      toast("Configure Backend URL e Collector Key no popup.", false);
-      return false;
+  function updatePanel(data = collectSisData("visible")) {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) return;
+    const status = panel.querySelector("[data-role='status']");
+    const details = panel.querySelector("[data-role='details']");
+    if (status) status.textContent = "[SIS] Detectado";
+    if (details) {
+      details.textContent = [
+        `Modelo: ${data.machineModel || "—"}`,
+        `Série: ${data.serialNumber || "—"}`,
+        `Grupo: ${data.group || "—"}`,
+        `Peças visíveis: ${data.parts.length}`,
+      ].join("\n");
     }
-    console.log("[SIS] Enviando para backend");
-    const response = await chrome.runtime.sendMessage({ type: "catc:send", backendUrl, collectorKey, payload });
-    if (response?.ok) {
-      console.log("[SIS] Captura salva");
-      toast(`Captura salva: ${payload.parts.length} peça(s).`);
-      return true;
-    }
-    toast(response?.error || "Falha ao enviar captura.", false);
-    return false;
   }
 
   async function captureAndSend(mode) {
     const payload = collectSisData(mode);
     if (!payload.parts.length) {
-      toast("Nenhuma peça encontrada.", false);
+      showToast("✖ Nenhuma peça encontrada.", false);
       return;
     }
-    await chrome.storage.local.set({ lastCapture: payload });
-    await send(payload);
-    refreshPanel();
-  }
-
-  function refreshPanel() {
-    const panel = document.getElementById(PANEL_ID);
-    const meta = panel?.querySelector("#catc-meta");
-    if (!meta) return;
-    const data = collectSisData("visible");
-    meta.innerHTML =
-      `<b>Serial:</b> ${data.serialNumber || "—"}<br>` +
-      `<b>Modelo:</b> ${data.machineModel || "—"}<br>` +
-      `<b>Sistema:</b> ${data.system || "—"}<br>` +
-      `<b>Grupo:</b> ${data.group || "—"}<br>` +
-      `<b>Peças visíveis:</b> ${data.parts.length}`;
+    const response = await chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.SEND_CAPTURE,
+      payload,
+      source: "sis-panel",
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error?.message ?? "Falha ao enviar captura.");
+    }
+    showToast(`✔ Captura salva · ${payload.parts.length} peça(s)`);
+    updatePanel(payload);
   }
 
   function renderPanel() {
-    if (!SIS_RE.test(location.href) || document.getElementById(PANEL_ID)) return;
-    const panel = document.createElement("div");
+    if (!SIS_URL_PATTERN.test(location.href) || document.getElementById(PANEL_ID)) return;
+    const panel = document.createElement("aside");
     panel.id = PANEL_ID;
+    panel.setAttribute("aria-label", "CAT Collector");
     panel.innerHTML = `
-      <header>🐈 CAT Collector</header>
-      <div class="catc-body">
-        <button id="catc-btn-page">Capturar página</button>
-        <button id="catc-btn-part" class="ghost">Capturar peça</button>
-        <button id="catc-btn-visible" class="ghost">Capturar tudo visível</button>
-        <div class="catc-meta" id="catc-meta">Detectando...</div>
+      <header><span>CAT</span> Collector</header>
+      <div class="cat-collector-body">
+        <strong data-role="status">[SIS] Detectado</strong>
+        <pre data-role="details">Lendo página...</pre>
+        <button type="button" data-mode="page">Capturar página</button>
+        <button type="button" data-mode="part" class="secondary">Capturar peça</button>
+        <button type="button" data-mode="visible" class="secondary">Capturar tudo visível</button>
       </div>`;
-    document.body.appendChild(panel);
-    panel.querySelector("#catc-btn-page").addEventListener("click", () => captureAndSend("page"));
-    panel.querySelector("#catc-btn-part").addEventListener("click", () => captureAndSend("part"));
-    panel.querySelector("#catc-btn-visible").addEventListener("click", () => captureAndSend("visible"));
-    refreshPanel();
-    new MutationObserver(() => window.requestAnimationFrame(refreshPanel)).observe(document.body, { childList: true, subtree: true });
+    document.documentElement.appendChild(panel);
+    for (const button of panel.querySelectorAll("button[data-mode]")) {
+      button.addEventListener("click", () => {
+        button.disabled = true;
+        captureAndSend(button.dataset.mode)
+          .catch((error) => {
+            console.error("[SIS]", error);
+            showToast(`✖ ${error.message}`, false);
+          })
+          .finally(() => {
+            button.disabled = false;
+          });
+      });
+    }
+    updatePanel();
   }
 
-  if (!window.__catCollectorV12MessageListener) {
-    window.__catCollectorV12MessageListener = true;
-    chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-      if (request.action === "ping") {
-        sendResponse({ ok: true, loaded: true, isSisPage: SIS_RE.test(location.href), url: location.href });
-        return true;
-      }
-      if (request.action === "capture") {
-        try {
-          const data = collectSisData(request.mode || "page");
-          sendResponse({ ok: true, data });
-        } catch (e) {
-          sendResponse({ ok: false, error: e.message });
-        }
-        return true;
+  async function autoCapture() {
+    if (!SIS_URL_PATTERN.test(location.href)) return;
+    const payload = collectSisData("visible");
+    if (!payload.parts.length) return;
+    const fingerprint = captureFingerprint(payload);
+    if (fingerprint === lastAutoFingerprint) return;
+    lastAutoFingerprint = fingerprint;
+    await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.AUTO_CAPTURE, payload });
+  }
+
+  function scheduleRefresh() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      renderPanel();
+      updatePanel();
+    }, 500);
+
+    if (location.href !== observedUrl) {
+      observedUrl = location.href;
+      lastAutoFingerprint = "";
+      clearTimeout(autoCaptureTimer);
+      autoCaptureTimer = setTimeout(() => autoCapture().catch(console.error), AUTO_CAPTURE_DELAY_MS);
+    }
+  }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === MESSAGE_TYPES.PING || message?.action === "ping") {
+      sendResponse({
+        ok: true,
+        loaded: true,
+        isSisPage: SIS_URL_PATTERN.test(location.href),
+        url: location.href,
+      });
+      return false;
+    }
+    if (message?.type === MESSAGE_TYPES.CAPTURE || message?.action === "capture") {
+      try {
+        sendResponse({ ok: true, data: collectSisData(message.mode ?? "page") });
+      } catch (error) {
+        sendResponse({ ok: false, error: serializeError(error) });
       }
       return false;
-    });
-  }
+    }
+    if (message?.type === MESSAGE_TYPES.STATUS) {
+      showToast(`${message.ok ? "✔" : "✖"} ${message.message}`, Boolean(message.ok));
+      return false;
+    }
+    return false;
+  });
 
   renderPanel();
-})();
+  const observer = new MutationObserver(scheduleRefresh);
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  autoCaptureTimer = setTimeout(() => autoCapture().catch(console.error), AUTO_CAPTURE_DELAY_MS);
+}
