@@ -1,22 +1,133 @@
-import {
-  MESSAGE_TYPES,
-  SIS_URL_PATTERN,
-  absoluteUrl,
-  captureFingerprint,
-  cleanText,
-  normalizeCapture,
-  normalizePartNumber,
-  normalizeQuantity,
-  serializeError,
-} from "./utils.js";
+(() => {
+"use strict";
 
-const INSTANCE_KEY = "__catCollectorProductionInstance";
+const MESSAGE_TYPES = Object.freeze({
+  PING: "CAT_COLLECTOR_PING",
+  CAPTURE_PAGE: "CAT_COLLECTOR_CAPTURE_PAGE",
+  CAPTURE_PART: "CAT_COLLECTOR_CAPTURE_PART",
+  CAPTURE_VISIBLE: "CAT_COLLECTOR_CAPTURE_VISIBLE",
+  SEND_CAPTURE: "CAT_COLLECTOR_SEND_BACKEND",
+  AUTO_CAPTURE: "CAT_COLLECTOR_AUTO_CAPTURE",
+  STATUS: "CAT_COLLECTOR_STATUS",
+});
+
+const SIS_URL_PATTERN = /^https:\/\/sis2\.cat\.com(?:\/|$)/i;
+const LISTENER_READY_KEY = "__CAT_COLLECTOR_LISTENER_READY__";
 const PANEL_ID = "cat-collector-panel";
 const TOAST_ID = "cat-collector-toast";
 const AUTO_CAPTURE_DELAY_MS = 1_800;
 
-if (!globalThis[INSTANCE_KEY]) {
-  globalThis[INSTANCE_KEY] = true;
+function cleanText(value, maxLength = 500) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function normalizePartNumber(value) {
+  const source = cleanText(value, 200).toUpperCase();
+  const matches = source.match(/[A-Z0-9]{1,5}(?:[-\s]?[A-Z0-9]{3,8})/g) ?? [];
+
+  for (const candidate of matches) {
+    if (!/\d/.test(candidate)) continue;
+    const compact = candidate.replace(/\s+/g, "");
+    if (compact.length < 5 || compact.length > 13) continue;
+    return compact;
+  }
+
+  return "";
+}
+
+function normalizeQuantity(value) {
+  const parsed = Number.parseInt(String(value ?? "1").replace(/[^0-9]/g, ""), 10);
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(9999, parsed)) : 1;
+}
+
+function absoluteUrl(value, baseUrl = globalThis.location?.href) {
+  const source = cleanText(value, 2048);
+  if (!source) return "";
+
+  try {
+    return new URL(source, baseUrl).href;
+  } catch {
+    return source;
+  }
+}
+
+function normalizePart(part, captureUrl = "") {
+  const partNumber = normalizePartNumber(part?.partNumber ?? part?.part_number ?? "");
+  if (!partNumber) return null;
+
+  return {
+    position: cleanText(part?.position ?? part?.itemPosition ?? part?.item_position, 80),
+    partNumber,
+    description: cleanText(part?.description ?? part?.name ?? partNumber, 500) || partNumber,
+    quantity: normalizeQuantity(part?.quantity),
+    imageUrl: absoluteUrl(part?.imageUrl ?? part?.image_url, captureUrl),
+    url: absoluteUrl(part?.url ?? part?.sourceUrl ?? captureUrl, captureUrl),
+    aliases: Array.isArray(part?.aliases)
+      ? [...new Set(part.aliases.map((item) => cleanText(item, 120)).filter(Boolean))]
+      : [],
+  };
+}
+
+function normalizeCapture(payload = {}) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const capturedDate = new Date(source.capturedAt ?? Date.now());
+  const capturedAt = Number.isNaN(capturedDate.valueOf())
+    ? new Date().toISOString()
+    : capturedDate.toISOString();
+  const url = absoluteUrl(source.url ?? source.sisUrl);
+  const sourceParts = source.parts ?? source.items ?? [];
+  const partsByNumber = new Map();
+
+  for (const sourcePart of Array.isArray(sourceParts) ? sourceParts : []) {
+    const part = normalizePart(sourcePart, url);
+    if (!part) continue;
+    const current = partsByNumber.get(part.partNumber);
+    partsByNumber.set(part.partNumber, current ? { ...current, ...part } : part);
+  }
+
+  return {
+    machineModel: cleanText(source.machineModel ?? source.model, 120),
+    serialNumber: cleanText(source.serialNumber ?? source.serial_number, 120).toUpperCase(),
+    system: cleanText(source.system, 240),
+    subsystem: cleanText(source.subsystem, 240),
+    group: cleanText(source.group ?? source.groupName, 240),
+    capturedAt,
+    capturedDate: capturedAt.slice(0, 10),
+    capturedTime: capturedAt.slice(11, 19),
+    url,
+    parts: [...partsByNumber.values()],
+  };
+}
+
+function captureFingerprint(capture) {
+  const normalized = normalizeCapture(capture);
+  const partNumbers = normalized.parts.map((part) => part.partNumber).sort().join(",");
+  return [
+    normalized.machineModel.toUpperCase(),
+    normalized.serialNumber.toUpperCase(),
+    normalized.group.toUpperCase(),
+    partNumbers,
+  ].join("|");
+}
+
+function serializeError(error) {
+  if (error && typeof error === "object") {
+    return {
+      name: cleanText(error.name ?? "Error", 80),
+      message: cleanText(error.message ?? String(error), 1000),
+      code: cleanText(error.code, 120),
+      status: Number(error.status) || 0,
+    };
+  }
+  return { name: "Error", message: cleanText(error || "Erro desconhecido", 1000) };
+}
+
+if (!window[LISTENER_READY_KEY]) {
+  window[LISTENER_READY_KEY] = true;
   startCollector();
 } else {
   console.log("[SIS] content.js já está carregado");
@@ -112,24 +223,55 @@ function startCollector() {
       const value = url.searchParams.get(key);
       if (value) return cleanText(value, 120).toUpperCase();
     }
+    const hashQuery = url.hash.includes("?") ? url.hash.slice(url.hash.indexOf("?") + 1) : "";
+    const hashParams = new URLSearchParams(hashQuery);
+    for (const key of [
+      "serialNumber",
+      "serial",
+      "sn",
+      "machineSerial",
+      "equipmentSerialNumber",
+      "productId",
+    ]) {
+      const value = hashParams.get(key);
+      if (value) return cleanText(value, 120).toUpperCase();
+    }
     const labeled = valueFromLabels([
       "serial(?: number)?",
       "s\\/n",
       "n[úu]mero de s[ée]rie",
       "prefixo",
     ]);
-    if (labeled) return labeled.toUpperCase();
+    if (labeled && !/^(NUMBER|SERIAL|SERIALNUMBER)$/i.test(labeled)) return labeled.toUpperCase();
     const catSerial = `${location.href} ${breadcrumbTexts().join(" ")}`.match(/\b([A-Z]{3}\d{5,8})\b/i);
     return catSerial?.[1]?.toUpperCase() ?? "";
   }
 
   function extractMachineModel() {
+    const serialNumber = extractSerialNumber();
+    const crumbs = filteredBreadcrumbs();
+    const serialIndex = serialNumber
+      ? crumbs.findIndex((value) => value.toUpperCase() === serialNumber)
+      : -1;
+    if (serialIndex > 0) {
+      const beforeSerial = cleanText(crumbs[serialIndex - 1], 120).toUpperCase();
+      if (beforeSerial && !/^(NUMBER|SERIAL|SIS|CAT|CATERPILLAR)$/i.test(beforeSerial)) {
+        return beforeSerial;
+      }
+    }
+
+    for (const crumb of [...crumbs].reverse()) {
+      const value = cleanText(crumb, 120).toUpperCase();
+      if (!value || value === serialNumber || /^(NUMBER|SERIAL|SIS|CAT|CATERPILLAR)$/i.test(value)) continue;
+      if (/\d/.test(value)) return value;
+    }
+
     const labeled = valueFromLabels(["machine model", "model", "modelo", "equipment"]);
-    if (labeled && /\d/.test(labeled)) return labeled.toUpperCase();
+    if (labeled && /\d/.test(labeled) && !/^(NUMBER|SERIAL)$/i.test(labeled)) return labeled.toUpperCase();
 
     const source = `${breadcrumbTexts().join(" ")} ${document.title}`;
     const match = source.match(/\b(\d{2,4}\s?[A-Z]{0,4}(?:\s?(?:GC|XE|L|K|M))?)\b/i);
-    return cleanText(match?.[1], 120).toUpperCase();
+    return cleanText(match?.[1] || "Modelo não informado", 120).toUpperCase();
   }
 
   function filteredBreadcrumbs() {
@@ -453,9 +595,15 @@ function startCollector() {
       });
       return false;
     }
-    if (message?.type === MESSAGE_TYPES.CAPTURE || message?.action === "capture") {
+    if (
+      message?.type === MESSAGE_TYPES.CAPTURE_PAGE ||
+      message?.type === MESSAGE_TYPES.CAPTURE_PART ||
+      message?.type === MESSAGE_TYPES.CAPTURE_VISIBLE ||
+      message?.action === "capture"
+    ) {
       try {
-        sendResponse({ ok: true, data: collectSisData(message.mode ?? "page") });
+        const capture = collectSisData(message.mode ?? "page");
+        sendResponse({ ok: true, capture, data: capture });
       } catch (error) {
         sendResponse({ ok: false, error: serializeError(error) });
       }
@@ -473,3 +621,4 @@ function startCollector() {
   observer.observe(document.documentElement, { childList: true, subtree: true });
   autoCaptureTimer = setTimeout(() => autoCapture().catch(console.error), AUTO_CAPTURE_DELAY_MS);
 }
+})();

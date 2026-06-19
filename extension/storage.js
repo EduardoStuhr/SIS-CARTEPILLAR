@@ -46,6 +46,14 @@ export async function initializeStorage() {
   if (!values[STORAGE_KEYS.CATALOG]) updates[STORAGE_KEYS.CATALOG] = {};
   if (!Array.isArray(values[STORAGE_KEYS.QUEUE])) updates[STORAGE_KEYS.QUEUE] = [];
   if (!values[STORAGE_KEYS.ALIASES]) updates[STORAGE_KEYS.ALIASES] = {};
+  if (Array.isArray(values[STORAGE_KEYS.HISTORY])) {
+    const history = values[STORAGE_KEYS.HISTORY].filter(Boolean);
+    if (history.length !== values[STORAGE_KEYS.HISTORY].length) updates[STORAGE_KEYS.HISTORY] = history;
+  }
+  if (Array.isArray(values[STORAGE_KEYS.QUEUE])) {
+    const queue = values[STORAGE_KEYS.QUEUE].filter((item) => item?.capture);
+    if (queue.length !== values[STORAGE_KEYS.QUEUE].length) updates[STORAGE_KEYS.QUEUE] = queue;
+  }
 
   if (Object.keys(updates).length) await write(updates);
 }
@@ -71,7 +79,9 @@ export async function saveConfig(config) {
 
 export async function getHistory() {
   const values = await read(STORAGE_KEYS.HISTORY);
-  return Array.isArray(values[STORAGE_KEYS.HISTORY]) ? values[STORAGE_KEYS.HISTORY] : [];
+  return Array.isArray(values[STORAGE_KEYS.HISTORY])
+    ? values[STORAGE_KEYS.HISTORY].filter(Boolean)
+    : [];
 }
 
 export async function getCatalogRecords() {
@@ -91,6 +101,9 @@ export async function getAliases() {
 
 export async function upsertCapture(payload, options = {}) {
   const capture = normalizeCapture(payload);
+  if (!capture.parts.length) {
+    throw Object.assign(new Error("Nenhuma captura válida para salvar."), { code: "EMPTY_CAPTURE" });
+  }
   const values = await read([
     STORAGE_KEYS.HISTORY,
     STORAGE_KEYS.CATALOG,
@@ -166,6 +179,9 @@ export async function clearHistory() {
 
 export async function enqueueCapture(payload, error) {
   const capture = normalizeCapture(payload);
+  if (!capture.parts.length) {
+    throw Object.assign(new Error("Nenhuma captura válida para enfileirar."), { code: "EMPTY_CAPTURE" });
+  }
   const fingerprint = captureFingerprint(capture);
   const values = await read(STORAGE_KEYS.QUEUE);
   const queue = Array.isArray(values[STORAGE_KEYS.QUEUE]) ? values[STORAGE_KEYS.QUEUE] : [];
@@ -189,7 +205,9 @@ export async function enqueueCapture(payload, error) {
 
 export async function getQueue() {
   const values = await read(STORAGE_KEYS.QUEUE);
-  return Array.isArray(values[STORAGE_KEYS.QUEUE]) ? values[STORAGE_KEYS.QUEUE] : [];
+  return Array.isArray(values[STORAGE_KEYS.QUEUE])
+    ? values[STORAGE_KEYS.QUEUE].filter((item) => item?.capture)
+    : [];
 }
 
 export async function removeQueuedCapture(id) {

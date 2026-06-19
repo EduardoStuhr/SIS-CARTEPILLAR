@@ -89,6 +89,11 @@ export async function sendCaptureToBackend(config, payload) {
   }
   const endpoint = getCaptureEndpoint(config.backendUrl);
   const capture = normalizeCapture(payload);
+  console.log("[SIS] URL final do endpoint", endpoint);
+  console.log("[SIS] Payload antes de enviar ao backend", capture);
+  if (capture.parts.some((part) => !part.partNumber)) {
+    throw new ApiError("Toda peça precisa ter partNumber.", { code: "INVALID_PART_NUMBER" });
+  }
   if (!capture.parts.length) {
     throw new ApiError("A captura não contém peças válidas.", { code: "EMPTY_CAPTURE" });
   }
@@ -115,6 +120,7 @@ export async function sendCaptureToBackend(config, payload) {
         url: endpoint,
         status: response.status,
         ok: response.ok,
+        body,
       });
       if (!response.ok) {
         console.error("[SIS] Erro do backend", {

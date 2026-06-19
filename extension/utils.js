@@ -1,17 +1,21 @@
 export const SIS_URL_PATTERN = /^https:\/\/sis2\.cat\.com(?:\/|$)/i;
 
 export const MESSAGE_TYPES = Object.freeze({
-  PING: "cat-collector:ping",
-  CAPTURE: "cat-collector:capture",
-  SAVE_CAPTURE: "cat-collector:save-capture",
-  SEND_CAPTURE: "cat-collector:send-capture",
-  AUTO_CAPTURE: "cat-collector:auto-capture",
-  TEST_BACKEND: "cat-collector:test-backend",
-  GET_STATE: "cat-collector:get-state",
-  SAVE_CONFIG: "cat-collector:save-config",
-  CLEAR_HISTORY: "cat-collector:clear-history",
-  RETRY_QUEUE: "cat-collector:retry-queue",
-  STATUS: "cat-collector:status",
+  PING: "CAT_COLLECTOR_PING",
+  CAPTURE_PAGE: "CAT_COLLECTOR_CAPTURE_PAGE",
+  CAPTURE_PART: "CAT_COLLECTOR_CAPTURE_PART",
+  CAPTURE_VISIBLE: "CAT_COLLECTOR_CAPTURE_VISIBLE",
+  CAPTURE: "CAT_COLLECTOR_CAPTURE_PAGE",
+  SAVE_CAPTURE: "CAT_COLLECTOR_SAVE_CAPTURE",
+  SEND_BACKEND: "CAT_COLLECTOR_SEND_BACKEND",
+  SEND_CAPTURE: "CAT_COLLECTOR_SEND_BACKEND",
+  AUTO_CAPTURE: "CAT_COLLECTOR_AUTO_CAPTURE",
+  TEST_BACKEND: "CAT_COLLECTOR_TEST_BACKEND",
+  GET_STATE: "CAT_COLLECTOR_GET_STATE",
+  SAVE_CONFIG: "CAT_COLLECTOR_SAVE_CONFIG",
+  CLEAR_HISTORY: "CAT_COLLECTOR_CLEAR_HISTORY",
+  RETRY_QUEUE: "CAT_COLLECTOR_RETRY_QUEUE",
+  STATUS: "CAT_COLLECTOR_STATUS",
 });
 
 export function cleanText(value, maxLength = 500) {
@@ -92,12 +96,13 @@ export function normalizePart(part, captureUrl = "") {
 }
 
 export function normalizeCapture(payload = {}) {
-  const capturedDate = new Date(payload.capturedAt ?? Date.now());
+  const source = payload && typeof payload === "object" ? payload : {};
+  const capturedDate = new Date(source.capturedAt ?? Date.now());
   const capturedAt = Number.isNaN(capturedDate.valueOf())
     ? new Date().toISOString()
     : capturedDate.toISOString();
-  const url = absoluteUrl(payload.url ?? payload.sisUrl);
-  const sourceParts = payload.parts ?? payload.items ?? [];
+  const url = absoluteUrl(source.url ?? source.sisUrl);
+  const sourceParts = source.parts ?? source.items ?? [];
   const partsByNumber = new Map();
 
   for (const sourcePart of Array.isArray(sourceParts) ? sourceParts : []) {
@@ -108,11 +113,11 @@ export function normalizeCapture(payload = {}) {
   }
 
   return {
-    machineModel: cleanText(payload.machineModel ?? payload.model, 120),
-    serialNumber: cleanText(payload.serialNumber ?? payload.serial_number, 120).toUpperCase(),
-    system: cleanText(payload.system, 240),
-    subsystem: cleanText(payload.subsystem, 240),
-    group: cleanText(payload.group ?? payload.groupName, 240),
+    machineModel: cleanText(source.machineModel ?? source.model, 120),
+    serialNumber: cleanText(source.serialNumber ?? source.serial_number, 120).toUpperCase(),
+    system: cleanText(source.system, 240),
+    subsystem: cleanText(source.subsystem, 240),
+    group: cleanText(source.group ?? source.groupName, 240),
     capturedAt,
     capturedDate: capturedAt.slice(0, 10),
     capturedTime: capturedAt.slice(11, 19),

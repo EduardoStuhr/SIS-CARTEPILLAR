@@ -25,6 +25,7 @@ export const Route = createFileRoute("/api/sis-capture")({
 
         const parsed = captureSchema.safeParse(body);
         if (!parsed.success) {
+          console.error("[POST /api/sis-capture] validação falhou", parsed.error.flatten());
           return json(
             { ok: false, error: "Captura inválida.", details: parsed.error.flatten() },
             { status: 422 },
@@ -32,7 +33,14 @@ export const Route = createFileRoute("/api/sis-capture")({
         }
 
         try {
+          console.info("[POST /api/sis-capture] captura recebida", {
+            parts: parsed.data.parts.length,
+            serialNumber: parsed.data.serialNumber,
+            machineModel: parsed.data.machineModel,
+            group: parsed.data.group,
+          });
           const saved = await saveCapture(parsed.data);
+          console.info("[POST /api/sis-capture] captura processada", saved);
           return json({ ok: true, ...saved });
         } catch (error) {
           console.error("[POST /api/sis-capture]", error);

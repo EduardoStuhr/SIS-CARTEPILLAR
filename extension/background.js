@@ -11,9 +11,63 @@ import {
   saveConfig,
   upsertCapture,
 } from "./storage.js";
-import { MESSAGE_TYPES, normalizeCapture, serializeError } from "./utils.js";
+import { MESSAGE_TYPES, SIS_URL_PATTERN, delay, normalizeCapture, serializeError } from "./utils.js";
 
 const log = (...args) => console.log("[SIS]", ...args);
+const CONTENT_SCRIPT_READY_DELAY_MS = 250;
+
+function friendlyError(message, code = "CAT_COLLECTOR_ERROR") {
+  return Object.assign(new Error(message), { code });
+}
+
+function isSisUrl(url) {
+  return SIS_URL_PATTERN.test(String(url || ""));
+}
+
+function captureModeFromType(type) {
+  if (type === MESSAGE_TYPES.CAPTURE_PART) return "part";
+  if (type === MESSAGE_TYPES.CAPTURE_VISIBLE) return "visible";
+  return "page";
+}
+
+function validateSisTab(tabId, tabUrl) {
+  log("Aba usada na captura", { tabId, url: tabUrl });
+  if (!tabId || !isSisUrl(tabUrl)) {
+    throw friendlyError("Abra uma página do SIS 2.0 antes de capturar.", "INVALID_SIS_TAB");
+  }
+}
+
+async function pingContentScript(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: MESSAGE_TYPES.PING });
+    log("Content script respondeu ao ping", { tabId, ok: Boolean(response?.ok), response });
+    return response?.ok ? response : null;
+  } catch (error) {
+    log("Content script nao respondeu ao ping", { tabId, error: error?.message });
+    return null;
+  }
+}
+
+async function ensureContentScript(tabId) {
+  const firstPing = await pingContentScript(tabId);
+  if (firstPing) return firstPing;
+
+  log("Injetando content.css/content.js", { tabId });
+  await chrome.scripting
+    .insertCSS({ target: { tabId }, files: ["content.css"] })
+    .catch((error) => log("content.css já injetado ou indisponível", error?.message));
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+  await delay(CONTENT_SCRIPT_READY_DELAY_MS);
+
+  const secondPing = await pingContentScript(tabId);
+  if (!secondPing) {
+    throw friendlyError(
+      "Não consegui ativar o CAT Collector nesta aba. Recarregue a página do SIS 2.0 e tente novamente.",
+      "CONTENT_SCRIPT_UNAVAILABLE",
+    );
+  }
+  return secondPing;
+}
 
 async function notifyTab(tabId, detail) {
   if (!tabId) return;
@@ -25,17 +79,26 @@ async function notifyTab(tabId, detail) {
 async function saveLocal(payload, source = "manual") {
   const normalized = normalizeCapture(payload);
   if (!normalized.parts.length) {
-    throw Object.assign(new Error("Nenhuma peça válida encontrada."), { code: "EMPTY_CAPTURE" });
+    throw friendlyError("Nenhuma peça válida encontrada.", "EMPTY_CAPTURE");
   }
   return upsertCapture(normalized, { sent: false, source });
 }
 
 async function sendCapture(payload, options = {}) {
-  const normalized = normalizeCapture(payload ?? (await getLastCapture()));
+  const storedCapture = payload ?? (await getLastCapture());
+  if (!storedCapture) {
+    throw friendlyError(
+      "Nenhuma captura encontrada. Clique em Capturar Página antes de enviar.",
+      "EMPTY_CAPTURE",
+    );
+  }
+
+  const normalized = normalizeCapture(storedCapture);
   if (!normalized.parts.length) {
-    throw Object.assign(new Error("Nenhuma captura válida disponível para envio."), {
-      code: "EMPTY_CAPTURE",
-    });
+    throw friendlyError(
+      "Nenhuma captura encontrada. Clique em Capturar Página antes de enviar.",
+      "EMPTY_CAPTURE",
+    );
   }
 
   const config = await getConfig();
@@ -111,20 +174,50 @@ async function handleAutoCapture(message, sender) {
   }
 }
 
+async function handleCaptureFromPopup(message) {
+  const tabId = message.tabId;
+  const tabUrl = message.tabUrl;
+  validateSisTab(tabId, tabUrl);
+  await ensureContentScript(tabId);
+
+  const mode = message.mode ?? captureModeFromType(message.type);
+  const response = await chrome.tabs.sendMessage(tabId, {
+    type: MESSAGE_TYPES.CAPTURE_PAGE,
+    mode,
+  });
+  if (!response?.ok) {
+    throw friendlyError(
+      response?.error?.message || "Não foi possível ler a página do SIS 2.0.",
+      response?.error?.code || "CAPTURE_FAILED",
+    );
+  }
+
+  const capture = normalizeCapture(response.capture ?? response.data);
+  log("Quantidade de peças capturadas", { tabId, mode, parts: capture.parts.length });
+  const saved = await saveLocal(capture, message.source ?? "popup");
+  return { ok: true, capture: saved.capture, historyEntry: saved.historyEntry };
+}
+
 async function handleMessage(message, sender) {
   switch (message?.type) {
+    case MESSAGE_TYPES.PING:
+      return { ok: true };
     case MESSAGE_TYPES.SAVE_CONFIG:
       return { ok: true, config: await saveConfig(message.config ?? {}) };
+    case MESSAGE_TYPES.CAPTURE_PAGE:
+    case MESSAGE_TYPES.CAPTURE_PART:
+    case MESSAGE_TYPES.CAPTURE_VISIBLE:
+      return handleCaptureFromPopup(message);
     case MESSAGE_TYPES.SAVE_CAPTURE: {
       const result = await saveLocal(message.payload, message.source ?? "popup");
       return { ok: true, ...result };
     }
-    case MESSAGE_TYPES.SEND_CAPTURE:
+    case MESSAGE_TYPES.SEND_BACKEND:
       return {
         ok: true,
         result: await sendCapture(message.payload, {
           source: message.source ?? "popup",
-          tabId: sender.tab?.id,
+          tabId: message.tabId ?? sender.tab?.id,
         }),
       };
     case MESSAGE_TYPES.AUTO_CAPTURE:
@@ -139,7 +232,7 @@ async function handleMessage(message, sender) {
     case MESSAGE_TYPES.RETRY_QUEUE:
       return { ok: true, result: await retryQueue() };
     default:
-      throw Object.assign(new Error("Mensagem desconhecida."), { code: "UNKNOWN_MESSAGE" });
+      throw friendlyError("Mensagem desconhecida.", "UNKNOWN_MESSAGE");
   }
 }
 
@@ -156,7 +249,7 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!String(message?.type ?? "").startsWith("cat-collector:")) return false;
+  if (!String(message?.type ?? "").startsWith("CAT_COLLECTOR_")) return false;
 
   handleMessage(message, sender)
     .then(sendResponse)
