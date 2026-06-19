@@ -1,0 +1,7 @@
+#catc-panel{position:fixed;right:16px;bottom:16px;z-index:2147483647;font-family:system-ui,Segoe UI,Arial,sans-serif;background:#111;color:#fff;border:1px solid #FFCC00;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.5);width:280px;overflow:hidden}
+#catc-panel header{background:#FFCC00;color:#111;padding:8px 10px;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px}
+#catc-panel .catc-body{padding:10px;display:flex;flex-direction:column;gap:8px}
+#catc-panel button{background:#FFCC00;color:#111;border:0;border-radius:6px;padding:8px 10px;font-weight:700;cursor:pointer;font-size:12px}
+#catc-panel button.ghost{background:#222;color:#FFCC00;border:1px solid #333}
+#catc-panel .catc-meta{font-size:11px;color:#ccc;line-height:1.4;max-height:120px;overflow:auto;background:#0a0a0a;padding:6px;border-radius:6px}
+#catc-toast{position:fixed;right:16px;bottom:200px;z-index:2147483647;background:#111;color:#FFCC00;padding:10px 14px;border:1px solid #FFCC00;border-radius:8px;font-family:system-ui;font-size:12px;max-width:320px}

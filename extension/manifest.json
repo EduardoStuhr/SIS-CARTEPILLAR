@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "CAT Collector",
+  "version": "1.2.0",
+  "description": "Captura peças do SIS 2.0 e envia para o CAT Smart Parts.",
+  "permissions": ["storage", "activeTab", "tabs", "scripting"],
+  "host_permissions": ["https://sis2.cat.com/*"],
+  "action": { "default_popup": "popup.html", "default_icon": "icon.png" },
+  "background": { "service_worker": "background.js" },
+  "icons": { "48": "icon.png", "128": "icon.png" },
+  "content_scripts": [
+    {
+      "matches": ["https://sis2.cat.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

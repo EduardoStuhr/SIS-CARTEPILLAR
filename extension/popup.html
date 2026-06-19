@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CAT Collector</title>
+<style>
+  body{font-family:system-ui;background:#111;color:#fff;width:360px;margin:0;padding:12px}
+  h1{font-size:14px;color:#FFCC00;margin:0 0 8px;display:flex;align-items:center;gap:6px}
+  h2{font-size:12px;color:#ddd;margin:14px 0 6px}
+  label{display:block;font-size:11px;color:#aaa;margin-top:8px}
+  input{width:100%;box-sizing:border-box;padding:7px;background:#0a0a0a;color:#fff;border:1px solid #333;border-radius:4px;font-size:12px}
+  button{margin-top:8px;background:#FFCC00;color:#111;border:0;border-radius:6px;padding:8px;font-weight:700;cursor:pointer;width:100%}
+  button.secondary{background:#222;color:#FFCC00;border:1px solid #333}
+  button.danger{background:#3a1616;color:#ffb4b4;border:1px solid #6b2020}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  ul{padding:0;margin:8px 0 0;list-style:none;max-height:180px;overflow:auto;font-size:11px}
+  li{padding:7px 0;border-bottom:1px solid #222}
+  small{color:#888}
+  code{font-size:10px;color:#aaa;word-break:break-all}
+  .ok{color:#4ade80}.err{color:#ff8a8a}.muted{color:#888;font-size:11px}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.status{min-height:18px;margin-top:8px;font-size:12px;line-height:1.35}.diagnostic{background:#0a0a0a;border:1px solid #252525;border-radius:6px;padding:8px;margin-top:8px;font-size:11px;line-height:1.45;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<h1>🐈 CAT Collector</h1>
+<label>Backend URL</label>
+<input id="backendUrl" placeholder="https://your-app.lovable.app">
+<label>Collector Key</label>
+<input id="collectorKey" type="password" placeholder="cole o CAT_COLLECTOR_KEY">
+<button id="save">Salvar configuração</button>
+
+<h2>Captura SIS 2.0</h2>
+<div class="row">
+  <button id="capturePage">Capturar Página</button>
+  <button id="capturePart">Capturar Peça</button>
+</div>
+<button id="captureVisible" class="secondary">Capturar Tudo Visível</button>
+<button id="sendBackend" class="secondary">Enviar ao Backend</button>
+<button id="testExtension" class="secondary">Testar extensão</button>
+<div id="status" class="status muted"></div>
+<div id="diagnostic" class="diagnostic" hidden></div>
+
+<h1 style="margin-top:14px">Últimas capturas</h1>
+<ul id="history"></ul>
+<script src="popup.js"></script>
+</body>
+</html>
